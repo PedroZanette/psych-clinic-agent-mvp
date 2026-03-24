@@ -1,0 +1,731 @@
+import streamlit as st
+from datetime import datetime, timedelta, time
+from uuid import uuid4
+
+# =============================
+# Integração Google Calendar
+# =============================
+USE_GOOGLE_CALENDAR = True
+DEFAULT_GOOGLE_CALENDAR_ID = "primary"
+
+try:
+    from google_calendar_service import find_event_by_text, update_event_time
+    GOOGLE_CALENDAR_AVAILABLE = True
+    GOOGLE_CALENDAR_IMPORT_ERROR = None
+except Exception as e:
+    GOOGLE_CALENDAR_AVAILABLE = False
+    GOOGLE_CALENDAR_IMPORT_ERROR = str(e)
+
+
+st.set_page_config(page_title="MVP Remarcação com IA", layout="wide")
+
+# =============================
+# Dados/configurações mockadas
+# =============================
+PSYCHOLOGISTS = {
+    "ana": {
+        "id": "ana",
+        "nome": "Dra. Ana",
+        "calendar_id": "primary",
+        "duracao_min": 50,
+        "requer_aprovacao_remarcacao": True,
+        "dias_permitidos": [0, 1, 2, 3],  # seg-qui
+        "janelas": [(time(9, 0), time(12, 0)), (time(14, 0), time(18, 0))],
+        "politica_cobranca": {
+            "tipo": "pix",
+            "quando": "sempre_na_terca"
+        },
+        "tom": "acolhedor e profissional"
+    },
+    "bia": {
+        "id": "bia",
+        "nome": "Dra. Bia",
+        "calendar_id": "primary",
+        "duracao_min": 50,
+        "requer_aprovacao_remarcacao": False,
+        "dias_permitidos": [1, 3, 4],  # ter, qui, sex
+        "janelas": [(time(10, 0), time(13, 0)), (time(15, 0), time(19, 0))],
+        "politica_cobranca": {
+            "tipo": "mensal",
+            "quando": "todo_dia_05"
+        },
+        "tom": "objetivo e gentil"
+    }
+}
+
+PATIENTS = {
+    "marina": {"id": "marina", "nome": "Marina", "telefone": "(48) 99999-1111"},
+    "joao": {"id": "joao", "nome": "João", "telefone": "(48) 99999-2222"},
+}
+
+
+def dt(day_offset: int, hour: int, minute: int = 0):
+    base = datetime.now().replace(second=0, microsecond=0)
+    return (base + timedelta(days=day_offset)).replace(hour=hour, minute=minute)
+
+
+def seed_consultations():
+    return [
+        {
+            "id": "evt-1",
+            "psicologa_id": "ana",
+            "paciente_id": "marina",
+            "paciente_nome": "Marina",
+            "titulo": "Sessão - Marina / Dra. Ana",
+            "inicio": dt(1, 10, 0),
+            "fim": dt(1, 10, 50),
+            "status": "agendada",
+            "meet_link": "https://meet.google.com/demo-ana-marina",
+            "observacoes": "Paciente prefere manhã",
+            "calendar_id": "primary",
+            "google_search_text": "TESTE MV",
+            "google_event_id": None,
+            "google_sync_status": "pendente",
+            "last_sync_message": "Ainda não sincronizado com Google Calendar."
+        },
+        {
+            "id": "evt-2",
+            "psicologa_id": "ana",
+            "paciente_id": "joao",
+            "paciente_nome": "João",
+            "titulo": "Sessão - João / Dra. Ana",
+            "inicio": dt(2, 15, 0),
+            "fim": dt(2, 15, 50),
+            "status": "agendada",
+            "meet_link": "https://meet.google.com/demo-ana-joao",
+            "observacoes": "Paciente prefere tarde",
+            "calendar_id": "primary",
+            "google_search_text": None,
+            "google_event_id": None,
+            "google_sync_status": "mock",
+            "last_sync_message": "Evento ainda não vinculado ao Google."
+        },
+        {
+            "id": "evt-3",
+            "psicologa_id": "bia",
+            "paciente_id": "marina",
+            "paciente_nome": "Marina",
+            "titulo": "Sessão - Marina / Dra. Bia",
+            "inicio": dt(3, 16, 0),
+            "fim": dt(3, 16, 50),
+            "status": "agendada",
+            "meet_link": "https://meet.google.com/demo-bia-marina",
+            "observacoes": "Paciente topa noite",
+            "calendar_id": "primary",
+            "google_search_text": None,
+            "google_event_id": None,
+            "google_sync_status": "mock",
+            "last_sync_message": "Evento ainda não vinculado ao Google."
+        }
+    ]
+
+
+# =============================
+# Estado da aplicação
+# =============================
+if "consultations" not in st.session_state:
+    st.session_state.consultations = seed_consultations()
+
+if "requests" not in st.session_state:
+    st.session_state.requests = []
+
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+
+# =============================
+# Helpers Google
+# =============================
+def resolve_google_event_for_consultation(consultation: dict):
+    if not USE_GOOGLE_CALENDAR:
+        return None, "Integração com Google Calendar desativada."
+
+    if not GOOGLE_CALENDAR_AVAILABLE:
+        return None, f"Serviço do Google indisponível: {GOOGLE_CALENDAR_IMPORT_ERROR}"
+
+    if consultation.get("google_event_id"):
+        return consultation["google_event_id"], "Evento já vinculado."
+
+    search_text = consultation.get("google_search_text") or consultation.get("titulo")
+    calendar_id = consultation.get("calendar_id", DEFAULT_GOOGLE_CALENDAR_ID)
+
+    if not search_text:
+        return None, "Consulta sem texto de busca para localizar evento no Google."
+
+    try:
+        event = find_event_by_text(calendar_id, search_text)
+        if not event:
+            consultation["google_sync_status"] = "nao_encontrado"
+            consultation["last_sync_message"] = f"Nenhum evento encontrado para '{search_text}'."
+            return None, consultation["last_sync_message"]
+
+        consultation["google_event_id"] = event["id"]
+        consultation["google_sync_status"] = "vinculado"
+        consultation["last_sync_message"] = f"Evento vinculado com sucesso: {event.get('summary', '(sem título)')}"
+
+        if event.get("hangoutLink"):
+            consultation["meet_link"] = event["hangoutLink"]
+
+        return consultation["google_event_id"], consultation["last_sync_message"]
+
+    except Exception as e:
+        consultation["google_sync_status"] = "erro"
+        consultation["last_sync_message"] = f"Erro ao buscar evento no Google: {e}"
+        return None, consultation["last_sync_message"]
+
+
+def maybe_sync_to_google_calendar(consultation: dict, new_start: datetime, new_end: datetime):
+    result = {
+        "used_google": False,
+        "success": False,
+        "message": "Atualização apenas local/mock."
+    }
+
+    if not USE_GOOGLE_CALENDAR:
+        return result
+
+    event_id, link_message = resolve_google_event_for_consultation(consultation)
+    if not event_id:
+        result["used_google"] = True
+        result["message"] = link_message
+        return result
+
+    try:
+        updated_event = update_event_time(
+            calendar_id=consultation.get("calendar_id", DEFAULT_GOOGLE_CALENDAR_ID),
+            event_id=event_id,
+            new_start_iso=new_start.isoformat(),
+            new_end_iso=new_end.isoformat(),
+        )
+
+        consultation["google_sync_status"] = "sincronizado"
+        consultation["last_sync_message"] = "Evento atualizado no Google Calendar com sucesso."
+        if updated_event.get("hangoutLink"):
+            consultation["meet_link"] = updated_event["hangoutLink"]
+
+        result["used_google"] = True
+        result["success"] = True
+        result["message"] = consultation["last_sync_message"]
+        return result
+
+    except Exception as e:
+        consultation["google_sync_status"] = "erro"
+        consultation["last_sync_message"] = f"Falha ao atualizar evento no Google Calendar: {e}"
+        result["used_google"] = True
+        result["message"] = consultation["last_sync_message"]
+        return result
+
+
+# =============================
+# Funções de negócio / "agentes"
+# =============================
+def parse_patient_intent(message: str):
+    msg = message.lower().strip()
+    wants_reschedule = any(
+        k in msg for k in ["remarcar", "remarca", "reagendar", "mudar", "outro horário", "outro horario"]
+    )
+    preference = None
+
+    if "manhã" in msg or "manha" in msg:
+        preference = "manha"
+    elif "tarde" in msg:
+        preference = "tarde"
+    elif "noite" in msg:
+        preference = "noite"
+
+    urgency = "alta" if any(k in msg for k in ["urgente", "hoje", "amanhã", "amanha"]) else "média"
+
+    return {
+        "intent": "reschedule" if wants_reschedule else "unknown",
+        "preference": preference,
+        "urgency": urgency,
+        "raw": message,
+    }
+
+
+def find_upcoming_consultation(psicologa_id: str, paciente_id: str):
+    future_items = [
+        c for c in st.session_state.consultations
+        if c["psicologa_id"] == psicologa_id
+        and c["paciente_id"] == paciente_id
+        and c["status"] == "agendada"
+        and c["inicio"] > datetime.now()
+    ]
+    future_items.sort(key=lambda x: x["inicio"])
+    return future_items[0] if future_items else None
+
+
+def get_busy_slots(psicologa_id: str):
+    return [
+        (c["inicio"], c["fim"]) for c in st.session_state.consultations
+        if c["psicologa_id"] == psicologa_id and c["status"] == "agendada"
+    ]
+
+
+def slot_overlaps(candidate_start: datetime, candidate_end: datetime, busy_slots):
+    for b_start, b_end in busy_slots:
+        if candidate_start < b_end and candidate_end > b_start:
+            return True
+    return False
+
+
+def preference_matches(candidate_start: datetime, preference: str | None):
+    if preference is None:
+        return True
+
+    hour = candidate_start.hour
+    if preference == "manha":
+        return 6 <= hour < 12
+    if preference == "tarde":
+        return 12 <= hour < 18
+    if preference == "noite":
+        return 18 <= hour < 22
+
+    return True
+
+
+def suggest_slots(psicologa_id: str, preference: str | None = None, days_ahead: int = 14, limit: int = 3):
+    psy = PSYCHOLOGISTS[psicologa_id]
+    duration = timedelta(minutes=psy["duracao_min"])
+    busy_slots = get_busy_slots(psicologa_id)
+    suggestions = []
+    start_day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+    for day in range(1, days_ahead + 1):
+        current_day = start_day + timedelta(days=day)
+        if current_day.weekday() not in psy["dias_permitidos"]:
+            continue
+
+        for win_start, win_end in psy["janelas"]:
+            current = current_day.replace(hour=win_start.hour, minute=win_start.minute)
+            end_boundary = current_day.replace(hour=win_end.hour, minute=win_end.minute)
+
+            while current + duration <= end_boundary:
+                candidate_end = current + duration
+                if not slot_overlaps(current, candidate_end, busy_slots) and preference_matches(current, preference):
+                    suggestions.append((current, candidate_end))
+                    if len(suggestions) >= limit:
+                        return suggestions
+
+                current += duration
+
+    return suggestions
+
+
+def communication_text(role: str, psy_name: str, patient_name: str, old_time: datetime, new_time: datetime | None = None):
+    if role == "patient_confirmation":
+        return (
+            f"Olá, {patient_name}! Sua solicitação de remarcação com {psy_name} foi registrada. "
+            f"A consulta anterior era {old_time.strftime('%d/%m às %H:%M')}. "
+            + (
+                f"Novo horário confirmado: {new_time.strftime('%d/%m às %H:%M')}."
+                if new_time
+                else "Aguardando confirmação da psicóloga."
+            )
+        )
+
+    if role == "psychologist_approval_request":
+        return (
+            f"{psy_name}, o paciente {patient_name} solicitou remarcar a consulta de "
+            f"{old_time.strftime('%d/%m às %H:%M')}. Há sugestões de novos horários prontas para aprovação."
+        )
+
+    if role == "psychologist_to_patient":
+        return (
+            f"Olá, {patient_name}! Houve uma necessidade de ajuste na agenda de {psy_name}. "
+            f"Estamos propondo novo horário para substituir a consulta de {old_time.strftime('%d/%m às %H:%M')}"
+            + (f": {new_time.strftime('%d/%m às %H:%M')}." if new_time else ".")
+        )
+
+    return "Mensagem não definida."
+
+
+def create_reschedule_request(origin: str, psicologa_id: str, paciente_id: str, consultation_id: str, preference: str | None, raw_message: str):
+    consultation = next(c for c in st.session_state.consultations if c["id"] == consultation_id)
+    suggestions = suggest_slots(psicologa_id, preference=preference, limit=3)
+
+    req = {
+        "id": str(uuid4()),
+        "origin": origin,
+        "psicologa_id": psicologa_id,
+        "paciente_id": paciente_id,
+        "consultation_id": consultation_id,
+        "status": (
+            "aguardando_aprovacao"
+            if PSYCHOLOGISTS[psicologa_id]["requer_aprovacao_remarcacao"]
+            else "aguardando_escolha_slot"
+        ),
+        "raw_message": raw_message,
+        "old_start": consultation["inicio"],
+        "old_end": consultation["fim"],
+        "suggestions": suggestions,
+        "selected_slot": None,
+        "created_at": datetime.now(),
+    }
+
+    st.session_state.requests.append(req)
+    return req
+
+
+def apply_reschedule(consultation_id: str, new_start: datetime, new_end: datetime):
+    for c in st.session_state.consultations:
+        if c["id"] == consultation_id:
+            sync_info = maybe_sync_to_google_calendar(c, new_start, new_end)
+
+            c["inicio"] = new_start
+            c["fim"] = new_end
+
+            return c, sync_info
+
+    return None, {"used_google": False, "success": False, "message": "Consulta não encontrada."}
+
+
+def summarize_request(req):
+    psy_name = PSYCHOLOGISTS[req["psicologa_id"]]["nome"]
+    patient_name = PATIENTS[req["paciente_id"]]["nome"]
+
+    return {
+        "solicitante": "Paciente" if req["origin"] == "patient" else "Psicóloga",
+        "psicologa": psy_name,
+        "paciente": patient_name,
+        "consulta_original": req["old_start"].strftime("%d/%m %H:%M"),
+        "status": req["status"],
+        "msg": req["raw_message"]
+    }
+
+
+# =============================
+# Cabeçalho
+# =============================
+st.title("MVP — Assistente de Remarcação de Consultas")
+st.caption("Protótipo configurável por psicóloga, com lógica de aprovação, sugestão de horários e atualização de consulta.")
+
+with st.expander("Arquitetura pensada para a demo"):
+    st.markdown(
+        """
+- **Orchestrator**: recebe a solicitação e coordena o fluxo.
+- **Policy Agent**: lê as regras da psicóloga/clínica.
+- **Scheduling Agent**: sugere horários livres.
+- **Communication Agent**: gera mensagens para paciente/psicóloga.
+- **Google Calendar Adapter**: vincula e atualiza eventos reais quando disponível.
+
+Nesta versão, os agentes são módulos lógicos em Python. O próximo passo natural é plugar n8n como orquestrador externo.
+        """
+    )
+
+if USE_GOOGLE_CALENDAR:
+    if GOOGLE_CALENDAR_AVAILABLE:
+        st.success("Integração com Google Calendar habilitada.")
+    else:
+        st.warning(f"Google Calendar não disponível no momento: {GOOGLE_CALENDAR_IMPORT_ERROR}")
+
+patient_tab, psychologist_tab, config_tab, admin_tab = st.tabs([
+    "Paciente",
+    "Psicóloga",
+    "Configuração",
+    "Admin / Estado"
+])
+
+# =============================
+# Aba Paciente
+# =============================
+with patient_tab:
+    st.subheader("Solicitação iniciada pelo paciente")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        paciente_id = st.selectbox(
+            "Paciente",
+            options=list(PATIENTS.keys()),
+            format_func=lambda x: PATIENTS[x]["nome"]
+        )
+        psicologa_id = st.selectbox(
+            "Psicóloga",
+            options=list(PSYCHOLOGISTS.keys()),
+            format_func=lambda x: PSYCHOLOGISTS[x]["nome"]
+        )
+        default_msg = "Oi, queria remarcar minha consulta. Pode ser de tarde?"
+        patient_message = st.text_area("Mensagem do paciente", value=default_msg, height=120)
+
+        if st.button("Processar solicitação do paciente", use_container_width=True):
+            parsed = parse_patient_intent(patient_message)
+            consultation = find_upcoming_consultation(psicologa_id, paciente_id)
+
+            if parsed["intent"] != "reschedule":
+                st.warning("A mensagem não foi reconhecida como pedido de remarcação.")
+            elif not consultation:
+                st.error("Não encontrei consulta futura para esse paciente com essa psicóloga.")
+            else:
+                req = create_reschedule_request(
+                    origin="patient",
+                    psicologa_id=psicologa_id,
+                    paciente_id=paciente_id,
+                    consultation_id=consultation["id"],
+                    preference=parsed["preference"],
+                    raw_message=patient_message
+                )
+                psy = PSYCHOLOGISTS[psicologa_id]
+                patient_name = PATIENTS[paciente_id]["nome"]
+
+                st.success("Solicitação registrada.")
+                st.info(communication_text("patient_confirmation", psy["nome"], patient_name, req["old_start"], None))
+
+                if psy["requer_aprovacao_remarcacao"]:
+                    st.info(communication_text("psychologist_approval_request", psy["nome"], patient_name, req["old_start"], None))
+                else:
+                    st.info("A política desta psicóloga não exige aprovação prévia. O próximo passo é escolher um slot.")
+
+    with col2:
+        st.markdown("### Próxima consulta encontrada")
+        consultation = find_upcoming_consultation(psicologa_id, paciente_id)
+
+        if consultation:
+            st.json({
+                "paciente": consultation["paciente_nome"],
+                "psicóloga": PSYCHOLOGISTS[consultation["psicologa_id"]]["nome"],
+                "início": consultation["inicio"].strftime("%d/%m/%Y %H:%M"),
+                "fim": consultation["fim"].strftime("%d/%m/%Y %H:%M"),
+                "meet": consultation["meet_link"],
+                "status": consultation["status"],
+                "calendar_id": consultation.get("calendar_id"),
+                "google_event_id": consultation.get("google_event_id"),
+                "google_search_text": consultation.get("google_search_text"),
+                "google_sync_status": consultation.get("google_sync_status"),
+            })
+        else:
+            st.write("Nenhuma consulta futura encontrada.")
+
+# =============================
+# Aba Psicóloga
+# =============================
+with psychologist_tab:
+    st.subheader("Fluxos da psicóloga")
+    sub1, sub2 = st.columns(2)
+
+    with sub1:
+        st.markdown("### Aprovar solicitação do paciente")
+        pending_requests = [
+            r for r in st.session_state.requests
+            if r["status"] in ["aguardando_aprovacao", "aguardando_escolha_slot"]
+        ]
+
+        if pending_requests:
+            selected_req_id = st.selectbox(
+                "Solicitações abertas",
+                options=[r["id"] for r in pending_requests],
+                format_func=lambda rid: (
+                    f"{summarize_request(next(r for r in pending_requests if r['id'] == rid))['paciente']} - "
+                    f"{summarize_request(next(r for r in pending_requests if r['id'] == rid))['consulta_original']}"
+                )
+            )
+            req = next(r for r in pending_requests if r["id"] == selected_req_id)
+            st.json(summarize_request(req))
+
+            if req["suggestions"]:
+                slot_labels = {
+                    i: f"{s[0].strftime('%d/%m %H:%M')} → {s[1].strftime('%H:%M')}"
+                    for i, s in enumerate(req["suggestions"])
+                }
+                selected_index = st.radio(
+                    "Escolha um novo horário",
+                    options=list(slot_labels.keys()),
+                    format_func=lambda i: slot_labels[i]
+                )
+            else:
+                selected_index = None
+                st.warning("Não encontrei sugestões automáticas. Para o MVP, ajuste as regras/agenda ou crie um novo cenário.")
+
+            action_col1, action_col2 = st.columns(2)
+
+            with action_col1:
+                if st.button("Aprovar e remarcar", disabled=selected_index is None, use_container_width=True):
+                    chosen = req["suggestions"][selected_index]
+                    updated, sync_info = apply_reschedule(req["consultation_id"], chosen[0], chosen[1])
+
+                    req["selected_slot"] = chosen
+                    req["status"] = "concluido"
+
+                    psy = PSYCHOLOGISTS[req["psicologa_id"]]
+                    patient_name = PATIENTS[req["paciente_id"]]["nome"]
+
+                    st.success("Consulta remarcada com sucesso.")
+                    st.info(communication_text("patient_confirmation", psy["nome"], patient_name, req["old_start"], chosen[0]))
+
+                    if sync_info["used_google"] and sync_info["success"]:
+                        st.success(f"Google Calendar: {sync_info['message']}")
+                    elif sync_info["used_google"] and not sync_info["success"]:
+                        st.warning(f"Google Calendar: {sync_info['message']}")
+                    else:
+                        st.info(sync_info["message"])
+
+                    st.json({
+                        "evento_atualizado_local": updated["id"],
+                        "novo_inicio": updated["inicio"].strftime("%d/%m/%Y %H:%M"),
+                        "novo_fim": updated["fim"].strftime("%d/%m/%Y %H:%M"),
+                        "meet_link": updated["meet_link"],
+                        "google_event_id": updated.get("google_event_id"),
+                        "google_sync_status": updated.get("google_sync_status"),
+                        "last_sync_message": updated.get("last_sync_message"),
+                    })
+
+            with action_col2:
+                if st.button("Recusar / manter horário", use_container_width=True):
+                    req["status"] = "recusado"
+                    st.warning("Solicitação recusada. A consulta foi mantida no horário original.")
+        else:
+            st.write("Nenhuma solicitação pendente.")
+
+    with sub2:
+        st.markdown("### Psicóloga inicia remarcação")
+        psy_from = st.selectbox(
+            "Psicóloga que quer remarcar",
+            options=list(PSYCHOLOGISTS.keys()),
+            format_func=lambda x: PSYCHOLOGISTS[x]["nome"],
+            key="psy_from"
+        )
+        psy_consultations = [
+            c for c in st.session_state.consultations
+            if c["psicologa_id"] == psy_from and c["status"] == "agendada"
+        ]
+
+        if psy_consultations:
+            selected_consultation_id = st.selectbox(
+                "Consulta a remarcar",
+                options=[c["id"] for c in psy_consultations],
+                format_func=lambda cid: (
+                    next(c for c in psy_consultations if c["id"] == cid)["titulo"]
+                    + " — "
+                    + next(c for c in psy_consultations if c["id"] == cid)["inicio"].strftime("%d/%m %H:%M")
+                )
+            )
+            reason = st.text_input("Motivo interno", value="Ajuste de agenda da profissional")
+
+            if st.button("Gerar proposta de remarcação", use_container_width=True):
+                consultation = next(c for c in psy_consultations if c["id"] == selected_consultation_id)
+                req = create_reschedule_request(
+                    origin="psychologist",
+                    psicologa_id=consultation["psicologa_id"],
+                    paciente_id=consultation["paciente_id"],
+                    consultation_id=consultation["id"],
+                    preference=None,
+                    raw_message=reason
+                )
+                req["status"] = "proposta_ao_paciente"
+
+                psy = PSYCHOLOGISTS[consultation["psicologa_id"]]
+                patient_name = PATIENTS[consultation["paciente_id"]]["nome"]
+
+                st.success("Proposta de remarcação criada.")
+                st.info(
+                    communication_text(
+                        "psychologist_to_patient",
+                        psy["nome"],
+                        patient_name,
+                        req["old_start"],
+                        req["suggestions"][0][0] if req["suggestions"] else None
+                    )
+                )
+        else:
+            st.write("Nenhuma consulta agendada para essa psicóloga.")
+
+# =============================
+# Aba Configuração
+# =============================
+with config_tab:
+    st.subheader("Regras por psicóloga")
+    cfg_psy = st.selectbox(
+        "Escolha a psicóloga",
+        options=list(PSYCHOLOGISTS.keys()),
+        format_func=lambda x: PSYCHOLOGISTS[x]["nome"],
+        key="cfg_psy"
+    )
+    psy = PSYCHOLOGISTS[cfg_psy]
+
+    st.json({
+        "nome": psy["nome"],
+        "calendar_id": psy["calendar_id"],
+        "duracao_min": psy["duracao_min"],
+        "requer_aprovacao_remarcacao": psy["requer_aprovacao_remarcacao"],
+        "dias_permitidos": psy["dias_permitidos"],
+        "janelas": [f"{a.strftime('%H:%M')}-{b.strftime('%H:%M')}" for a, b in psy["janelas"]],
+        "politica_cobranca": psy["politica_cobranca"],
+        "tom": psy["tom"]
+    })
+
+    st.markdown("### Como isso escala")
+    st.markdown(
+        """
+- Cada psicóloga pode ter regras próprias de agenda, cobrança e comunicação.
+- Em produção, essas regras sairiam de uma base/configuração por clínica.
+- O fluxo de atendimento usa essas regras para adaptar a tomada de decisão.
+- A mesma estrutura pode futuramente integrar cobrança, prontuário e notificações externas.
+- As skills podem ser modeladas por perfil, clínica ou profissional.
+        """
+    )
+
+# =============================
+# Aba Admin
+# =============================
+with admin_tab:
+    st.subheader("Estado interno da demo")
+
+    st.markdown("### Consultas")
+    st.dataframe([
+        {
+            "id": c["id"],
+            "psicóloga": PSYCHOLOGISTS[c["psicologa_id"]]["nome"],
+            "paciente": c["paciente_nome"],
+            "início": c["inicio"].strftime("%d/%m/%Y %H:%M"),
+            "fim": c["fim"].strftime("%d/%m/%Y %H:%M"),
+            "status": c["status"],
+            "meet": c["meet_link"],
+            "calendar_id": c.get("calendar_id"),
+            "google_event_id": c.get("google_event_id"),
+            "google_search_text": c.get("google_search_text"),
+            "google_sync_status": c.get("google_sync_status"),
+            "last_sync_message": c.get("last_sync_message"),
+        }
+        for c in st.session_state.consultations
+    ], use_container_width=True)
+
+    st.markdown("### Solicitações")
+    st.dataframe([
+        {
+            "id": r["id"],
+            "origem": r["origin"],
+            "psicóloga": PSYCHOLOGISTS[r["psicologa_id"]]["nome"],
+            "paciente": PATIENTS[r["paciente_id"]]["nome"],
+            "original": r["old_start"].strftime("%d/%m/%Y %H:%M"),
+            "status": r["status"],
+            "sugestões": len(r["suggestions"])
+        }
+        for r in st.session_state.requests
+    ], use_container_width=True)
+
+    st.markdown("### Ações rápidas")
+
+    target_evt = next((c for c in st.session_state.consultations if c["id"] == "evt-1"), None)
+    if target_evt:
+        if st.button("Vincular evt-1 ao Google Calendar", use_container_width=True):
+            event_id, msg = resolve_google_event_for_consultation(target_evt)
+            if event_id:
+                st.success(msg)
+            else:
+                st.warning(msg)
+
+    st.markdown("### Próximos passos técnicos")
+    st.markdown(
+        """
+1. Substituir a busca local de agenda por disponibilidade real com freeBusy.
+2. Buscar eventos por paciente/psicóloga via API.
+3. Atualizar eventos via API ao remarcar.
+4. Plugar LLM para interpretação da mensagem natural.
+5. Mover a orquestração para n8n.
+6. Transformar regras em skills configuráveis por clínica/profissional.
+        """
+    )
+
+st.divider()
+st.caption(
+    "MVP demonstrativo com dados fictícios. Quando disponível, a consulta pode ser vinculada ao Google Calendar para remarcação real."
+)
