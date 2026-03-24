@@ -393,6 +393,16 @@ def summarize_request(req):
         "msg": req["raw_message"]
     }
 
+def get_pending_patient_proposals(psicologa_id: str, paciente_id: str):
+    proposals = [
+        r for r in st.session_state.requests
+        if r["origin"] == "psychologist"
+        and r["status"] == "proposta_ao_paciente"
+        and r["psicologa_id"] == psicologa_id
+        and r["paciente_id"] == paciente_id
+    ]
+    proposals.sort(key=lambda x: x["created_at"], reverse=True)
+    return proposals
 
 # =============================
 # Cabeçalho
@@ -494,6 +504,116 @@ with patient_tab:
             })
         else:
             st.write("Nenhuma consulta futura encontrada.")
+        
+        st.markdown("### Propostas recebidas da psicóloga")
+
+        pending_patient_proposals = get_pending_patient_proposals(psicologa_id, paciente_id)
+
+        if pending_patient_proposals:
+            selected_proposal_id = st.selectbox(
+                "Propostas pendentes",
+                options=[r["id"] for r in pending_patient_proposals],
+                key="patient_pending_proposal_select",
+                format_func=lambda rid: (
+                    f"{PSYCHOLOGISTS[next(r for r in pending_patient_proposals if r['id'] == rid)['psicologa_id']]['nome']} - "
+                    f"{next(r for r in pending_patient_proposals if r['id'] == rid)['old_start'].strftime('%d/%m %H:%M')}"
+                )
+            )
+
+            proposal = next(r for r in pending_patient_proposals if r["id"] == selected_proposal_id)
+
+            st.info(
+                communication_text(
+                    "psychologist_to_patient",
+                    PSYCHOLOGISTS[proposal["psicologa_id"]]["nome"],
+                    PATIENTS[proposal["paciente_id"]]["nome"],
+                    proposal["old_start"],
+                    proposal["suggestions"][0][0] if proposal["suggestions"] else None
+                )
+            )
+
+            st.json({
+                "psicóloga": PSYCHOLOGISTS[proposal["psicologa_id"]]["nome"],
+                "consulta_original": proposal["old_start"].strftime("%d/%m/%Y %H:%M"),
+                "status": proposal["status"],
+                "mensagem_interna": proposal["raw_message"],
+                 })
+
+            if proposal["suggestions"]:
+                patient_slot_labels = {
+                    i: f"{slot[0].strftime('%d/%m %H:%M')} → {slot[1].strftime('%H:%M')}"
+                    for i, slot in enumerate(proposal["suggestions"])
+                }
+
+                patient_selected_index = st.radio(
+                    "Escolha um novo horário sugerido",
+                    options=list(patient_slot_labels.keys()),
+                    key=f"patient_proposal_radio_{proposal['id']}",
+                    format_func=lambda i: patient_slot_labels[i]
+                )
+            else:
+                patient_selected_index = None
+                st.warning("Essa proposta não possui horários sugeridos.")
+
+            patient_action_col1, patient_action_col2 = st.columns(2)
+
+            with patient_action_col1:
+                if st.button(
+                    "Aceitar proposta e remarcar",
+                    key=f"accept_patient_proposal_{proposal['id']}",
+                    disabled=patient_selected_index is None,
+                    width="stretch"
+                ):
+                    chosen = proposal["suggestions"][patient_selected_index]
+                    updated, sync_info = apply_reschedule(
+                        proposal["consultation_id"],
+                        chosen[0],
+                        chosen[1]
+                    )
+
+                    proposal["selected_slot"] = chosen
+                    proposal["status"] = "concluido"
+
+                    st.success("Proposta aceita e consulta remarcada com sucesso.")
+                    st.info(
+                        communication_text(
+                            "patient_confirmation",
+                            PSYCHOLOGISTS[proposal["psicologa_id"]]["nome"],
+                            PATIENTS[proposal["paciente_id"]]["nome"],
+                            proposal["old_start"],
+                            chosen[0]
+                        )
+                    )
+
+                    if sync_info["used_google"] and sync_info["success"]:
+                        st.success(f"Google Calendar: {sync_info['message']}")
+                    elif sync_info["used_google"] and not sync_info["success"]:
+                        st.warning(f"Google Calendar: {sync_info['message']}")
+                    else:
+                        st.info(sync_info["message"])
+
+                    st.json({
+                        "evento_atualizado_local": updated["id"],
+                        "novo_inicio": updated["inicio"].strftime("%d/%m/%Y %H:%M"),
+                        "novo_fim": updated["fim"].strftime("%d/%m/%Y %H:%M"),
+                        "google_event_id": updated.get("google_event_id"),
+                        "google_sync_status": updated.get("google_sync_status"),
+                        "last_sync_message": updated.get("last_sync_message"),
+                    })
+
+                    st.rerun()
+
+            with patient_action_col2:
+                if st.button(
+                    "Recusar proposta",
+                    key=f"reject_patient_proposal_{proposal['id']}",
+                    width="stretch"
+                ):
+                    proposal["status"] = "recusado_pelo_paciente"
+                    st.warning("A proposta foi recusada pelo paciente.")
+                    st.rerun()
+        else:
+            st.write("Nenhuma proposta pendente da psicóloga para este paciente.")
 
 # =============================
 # Aba Psicóloga
