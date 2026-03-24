@@ -2,6 +2,19 @@ import streamlit as st
 from datetime import datetime, timedelta, time
 from uuid import uuid4
 
+USE_GEMINI = True
+
+try:
+    from gemini_service import (
+        parse_patient_message_with_gemini,
+        generate_confirmation_with_gemini,
+    )
+    GEMINI_AVAILABLE = True
+    GEMINI_IMPORT_ERROR = None
+except Exception as e:
+    GEMINI_AVAILABLE = False
+    GEMINI_IMPORT_ERROR = str(e)
+
 # =============================
 # Integração Google Calendar
 # =============================
@@ -458,7 +471,19 @@ with patient_tab:
         patient_message = st.text_area("Mensagem do paciente", value=default_msg, height=120)
 
         if st.button("Processar solicitação do paciente", use_container_width=True):
-            parsed = parse_patient_intent(patient_message)
+            if USE_GEMINI and GEMINI_AVAILABLE:
+                gemini_result = parse_patient_message_with_gemini(patient_message)
+                parsed = {
+                    "intent": gemini_result["intent"],
+                    "preference": gemini_result["preference"],
+                    "urgency": gemini_result["urgency"],
+                    "raw": patient_message,
+                }
+                assistant_first_reply = gemini_result["reply"]
+            else:
+                parsed = parse_patient_intent(patient_message)
+                assistant_first_reply = "Entendi sua solicitação. Vou verificar opções para você."
+
             consultation = find_upcoming_consultation(psicologa_id, paciente_id)
 
             if parsed["intent"] != "reschedule":
@@ -478,10 +503,18 @@ with patient_tab:
                 patient_name = PATIENTS[paciente_id]["nome"]
 
                 st.success("Solicitação registrada.")
-                st.info(communication_text("patient_confirmation", psy["nome"], patient_name, req["old_start"], None))
+                st.info(f"WhatsApp (simulado) • Assistente: {assistant_first_reply}")
 
                 if psy["requer_aprovacao_remarcacao"]:
-                    st.info(communication_text("psychologist_approval_request", psy["nome"], patient_name, req["old_start"], None))
+                    st.info(
+                        communication_text(
+                            "psychologist_approval_request",
+                            psy["nome"],
+                            patient_name,
+                            req["old_start"],
+                            None
+                        )
+                    )
                 else:
                     st.info("A política desta psicóloga não exige aprovação prévia. O próximo passo é escolher um slot.")
 
@@ -575,15 +608,30 @@ with patient_tab:
                     proposal["status"] = "concluido"
 
                     st.success("Proposta aceita e consulta remarcada com sucesso.")
-                    st.info(
-                        communication_text(
-                            "patient_confirmation",
-                            PSYCHOLOGISTS[proposal["psicologa_id"]]["nome"],
-                            PATIENTS[proposal["paciente_id"]]["nome"],
-                            proposal["old_start"],
-                            chosen[0]
+
+                    patient_name = PATIENTS[proposal["paciente_id"]]["nome"]
+                    psychologist_name = PSYCHOLOGISTS[proposal["psicologa_id"]]["nome"]
+                    old_time_str = proposal["old_start"].strftime("%d/%m às %H:%M")
+                    new_time_str = chosen[0].strftime("%d/%m às %H:%M")
+
+                    if USE_GEMINI and GEMINI_AVAILABLE:
+                        final_reply = generate_confirmation_with_gemini(
+                            patient_name=patient_name,
+                            psychologist_name=psychologist_name,
+                            old_time=old_time_str,
+                            new_time=new_time_str,
                         )
-                    )
+                        st.info(f"WhatsApp (simulado) • Assistente: {final_reply}")
+                    else:
+                        st.info(
+                            communication_text(
+                                "patient_confirmation",
+                                psychologist_name,
+                                patient_name,
+                                proposal["old_start"],
+                                chosen[0]
+                            )
+                        )
 
                     if sync_info["used_google"] and sync_info["success"]:
                         st.success(f"Google Calendar: {sync_info['message']}")
@@ -669,7 +717,28 @@ with psychologist_tab:
                     patient_name = PATIENTS[req["paciente_id"]]["nome"]
 
                     st.success("Consulta remarcada com sucesso.")
-                    st.info(communication_text("patient_confirmation", psy["nome"], patient_name, req["old_start"], chosen[0]))
+
+                    old_time_str = req["old_start"].strftime("%d/%m às %H:%M")
+                    new_time_str = chosen[0].strftime("%d/%m às %H:%M")
+
+                    if USE_GEMINI and GEMINI_AVAILABLE:
+                        final_reply = generate_confirmation_with_gemini(
+                            patient_name=patient_name,
+                            psychologist_name=psy["nome"],
+                            old_time=old_time_str,
+                            new_time=new_time_str,
+                        )
+                        st.info(f"WhatsApp (simulado) • Assistente: {final_reply}")
+                    else:
+                        st.info(
+                            communication_text(
+                                "patient_confirmation",
+                                psy["nome"],
+                                patient_name,
+                                req["old_start"],
+                                chosen[0]
+                            )
+                        )
 
                     if sync_info["used_google"] and sync_info["success"]:
                         st.success(f"Google Calendar: {sync_info['message']}")
