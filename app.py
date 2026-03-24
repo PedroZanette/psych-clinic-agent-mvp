@@ -1,3 +1,4 @@
+import pandas as pd
 import streamlit as st
 from datetime import datetime, timedelta, time
 from uuid import uuid4
@@ -409,6 +410,45 @@ def summarize_request(req):
         "status": req["status"],
         "msg": req["raw_message"]
     }
+
+def build_requests_export_dataframe():
+    rows = []
+
+    for r in st.session_state.requests:
+        consultation = next(
+            (c for c in st.session_state.consultations if c["id"] == r["consultation_id"]),
+            None
+        )
+
+        old_start = r["old_start"].strftime("%d/%m/%Y %H:%M") if r.get("old_start") else ""
+        old_end = r["old_end"].strftime("%d/%m/%Y %H:%M") if r.get("old_end") else ""
+
+        if r.get("selected_slot"):
+            new_start = r["selected_slot"][0].strftime("%d/%m/%Y %H:%M")
+            new_end = r["selected_slot"][1].strftime("%d/%m/%Y %H:%M")
+        else:
+            new_start = ""
+            new_end = ""
+
+        rows.append({
+            "id_solicitacao": r["id"],
+            "origem": "paciente" if r["origin"] == "patient" else "psicologa",
+            "psicologa": PSYCHOLOGISTS[r["psicologa_id"]]["nome"],
+            "paciente": PATIENTS[r["paciente_id"]]["nome"],
+            "status": r["status"],
+            "mensagem_original": r["raw_message"],
+            "consulta_inicio_original": old_start,
+            "consulta_fim_original": old_end,
+            "novo_inicio": new_start,
+            "novo_fim": new_end,
+            "consulta_id_local": r["consultation_id"],
+            "google_event_id": consultation.get("google_event_id") if consultation else None,
+            "google_sync_status": consultation.get("google_sync_status") if consultation else None,
+            "last_sync_message": consultation.get("last_sync_message") if consultation else None,
+            "criado_em": r["created_at"].strftime("%d/%m/%Y %H:%M") if r.get("created_at") else "",
+        })
+
+    return pd.DataFrame(rows)
 
 def get_pending_patient_proposals(psicologa_id: str, paciente_id: str):
     proposals = [
@@ -919,6 +959,25 @@ with admin_tab:
                 st.success(msg)
             else:
                 st.warning(msg)
+                
+    st.markdown("### Exportação")
+
+    export_df = build_requests_export_dataframe()
+
+    if not export_df.empty:
+        csv_data = export_df.to_csv(index=False).encode("utf-8-sig")
+
+        st.download_button(
+            label="Baixar solicitações em CSV",
+            data=csv_data,
+            file_name="solicitacoes_remarcacao.csv",
+            mime="text/csv",
+            width="stretch"
+        )
+
+        st.dataframe(export_df, width="stretch")
+    else:
+        st.info("Ainda não há solicitações para exportar.")
 
     st.markdown("### Próximos passos técnicos")
     st.markdown(

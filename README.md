@@ -136,15 +136,20 @@ O sistema foi organizado em módulos lógicos com responsabilidades separadas:
 
 ## Estrutura do projeto
 
+## Estrutura do projeto
+
 ```bash
 psych-clinic-agent-mvp/
 ├── app.py
 ├── gemini_service.py
 ├── google_calendar_service.py
 ├── test_gemini.py
-├── test_calendar.py
-├── credentials.json
-├── token.json
-├── .env
+├── run_local.bat
 ├── requirements.txt
-└── README.md
+├── README.md
+├── .env.example
+├── testes/
+│   └── test_calendar.py
+├── credentials.json        
+├── token.json              
+└── .env                    
