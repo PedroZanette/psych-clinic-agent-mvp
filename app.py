@@ -132,6 +132,10 @@ def seed_consultations():
         }
     ]
 
+def reset_demo_state():
+    st.session_state.consultations = seed_consultations()
+    st.session_state.requests = []
+    st.session_state.chat_history = []
 
 # =============================
 # Estado da aplicação
@@ -858,6 +862,20 @@ with config_tab:
 with admin_tab:
     st.subheader("Estado interno da demo")
 
+    st.subheader("Estado interno da demo")
+
+    st.markdown("### Controle da demo")
+    reset_col1, reset_col2 = st.columns(2)
+
+    with reset_col1:
+        if st.button("Resetar demo", width="stretch"):
+            reset_demo_state()
+            st.success("Demo resetada com sucesso.")
+            st.rerun()
+
+    with reset_col2:
+        st.info("O reset volta apenas o estado local do app. Eventos já alterados no Google Calendar não são revertidos automaticamente.")
+    
     st.markdown("### Consultas")
     st.dataframe([
         {
