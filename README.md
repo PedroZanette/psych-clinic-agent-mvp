@@ -136,8 +136,6 @@ O sistema foi organizado em módulos lógicos com responsabilidades separadas:
 
 ## Estrutura do projeto
 
-## Estrutura do projeto
-
 ```bash
 psych-clinic-agent-mvp/
 ├── app.py

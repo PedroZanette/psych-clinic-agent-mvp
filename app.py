@@ -555,11 +555,116 @@ def get_pending_patient_proposals(psicologa_id: str, paciente_id: str):
     proposals.sort(key=lambda x: x["created_at"], reverse=True)
     return proposals
 
+DISPLAY_OPTIONS = ["Formatado", "JSON"]
+
+if "display_mode" not in st.session_state:
+    st.session_state.display_mode = "Formatado"
+
+
+def pretty_label(label: str) -> str:
+    return label.replace("_", " ").strip().capitalize()
+
+
+def format_display_value(value):
+    if isinstance(value, datetime):
+        return value.strftime("%d/%m/%Y %H:%M")
+
+    if isinstance(value, tuple):
+        return " → ".join(format_display_value(v) for v in value)
+
+    if isinstance(value, list):
+        if not value:
+            return "—"
+        return ", ".join(format_display_value(v) for v in value)
+
+    if isinstance(value, dict):
+        if not value:
+            return "—"
+        return " | ".join(
+            f"{pretty_label(str(k))}: {format_display_value(v)}"
+            for k, v in value.items()
+        )
+
+    if value is None or value == "":
+        return "—"
+
+    return str(value)
+
+
+def render_data_view(data: dict, mode: str, empty_message: str = "Sem dados para exibir."):
+    if not data:
+        st.write(empty_message)
+        return
+
+    if mode == "JSON":
+        st.json(data)
+        return
+
+    with st.container():
+        for key, value in data.items():
+            st.markdown(f"**{pretty_label(str(key))}:** {format_display_value(value)}")
+
+
+def consultation_display_data(consultation: dict):
+    return {
+        "paciente": consultation["paciente_nome"],
+        "psicóloga": PSYCHOLOGISTS[consultation["psicologa_id"]]["nome"],
+        "início": consultation["inicio"].strftime("%d/%m/%Y %H:%M"),
+        "fim": consultation["fim"].strftime("%d/%m/%Y %H:%M"),
+        "meet": consultation["meet_link"],
+        "status": consultation["status"],
+        "calendar_id": consultation.get("calendar_id"),
+        "google_event_id": consultation.get("google_event_id"),
+        "google_search_text": consultation.get("google_search_text"),
+        "google_sync_status": consultation.get("google_sync_status"),
+        "last_sync_message": consultation.get("last_sync_message"),
+    }
+
+
+def proposal_display_data(proposal: dict):
+    return {
+        "psicóloga": PSYCHOLOGISTS[proposal["psicologa_id"]]["nome"],
+        "consulta_original": proposal["old_start"].strftime("%d/%m/%Y %H:%M"),
+        "status": proposal["status"],
+        "mensagem_interna": proposal["raw_message"],
+    }
+
+
+def updated_consultation_display_data(updated: dict):
+    return {
+        "evento_atualizado_local": updated["id"],
+        "novo_inicio": updated["inicio"].strftime("%d/%m/%Y %H:%M"),
+        "novo_fim": updated["fim"].strftime("%d/%m/%Y %H:%M"),
+        "meet_link": updated.get("meet_link"),
+        "google_event_id": updated.get("google_event_id"),
+        "google_sync_status": updated.get("google_sync_status"),
+        "last_sync_message": updated.get("last_sync_message"),
+    }
+
+
+def psychologist_config_display_data(psy: dict):
+    return {
+        "nome": psy["nome"],
+        "calendar_id": psy["calendar_id"],
+        "duracao_min": psy["duracao_min"],
+        "requer_aprovacao_remarcacao": psy["requer_aprovacao_remarcacao"],
+        "dias_permitidos": psy["dias_permitidos"],
+        "janelas": [f"{a.strftime('%H:%M')}-{b.strftime('%H:%M')}" for a, b in psy["janelas"]],
+        "politica_cobranca": psy["politica_cobranca"],
+        "tom": psy["tom"],
+    }
+
 # =============================
 # Cabeçalho
 # =============================
 st.title("MVP — Assistente de Remarcação de Consultas")
 st.caption("Protótipo configurável por psicóloga, com lógica de aprovação, sugestão de horários e atualização de consulta.")
+view_mode = st.radio(
+    "Visualização dos dados",
+    options=DISPLAY_OPTIONS,
+    horizontal=True,
+    key="display_mode"
+)
 
 with st.expander("Arquitetura pensada para a demo"):
     st.markdown(
@@ -670,18 +775,7 @@ with patient_tab:
         consultation = find_upcoming_consultation(psicologa_id, paciente_id)
 
         if consultation:
-            st.json({
-                "paciente": consultation["paciente_nome"],
-                "psicóloga": PSYCHOLOGISTS[consultation["psicologa_id"]]["nome"],
-                "início": consultation["inicio"].strftime("%d/%m/%Y %H:%M"),
-                "fim": consultation["fim"].strftime("%d/%m/%Y %H:%M"),
-                "meet": consultation["meet_link"],
-                "status": consultation["status"],
-                "calendar_id": consultation.get("calendar_id"),
-                "google_event_id": consultation.get("google_event_id"),
-                "google_search_text": consultation.get("google_search_text"),
-                "google_sync_status": consultation.get("google_sync_status"),
-            })
+            render_data_view(consultation_display_data(consultation), view_mode)
         else:
             st.write("Nenhuma consulta futura encontrada.")
         
@@ -712,12 +806,7 @@ with patient_tab:
                 )
             )
 
-            st.json({
-                "psicóloga": PSYCHOLOGISTS[proposal["psicologa_id"]]["nome"],
-                "consulta_original": proposal["old_start"].strftime("%d/%m/%Y %H:%M"),
-                "status": proposal["status"],
-                "mensagem_interna": proposal["raw_message"],
-                 })
+            render_data_view(proposal_display_data(proposal), view_mode)
 
             if proposal["suggestions"]:
                 patient_slot_labels = {
@@ -787,14 +876,7 @@ with patient_tab:
                     else:
                         st.info(sync_info["message"])
 
-                    st.json({
-                        "evento_atualizado_local": updated["id"],
-                        "novo_inicio": updated["inicio"].strftime("%d/%m/%Y %H:%M"),
-                        "novo_fim": updated["fim"].strftime("%d/%m/%Y %H:%M"),
-                        "google_event_id": updated.get("google_event_id"),
-                        "google_sync_status": updated.get("google_sync_status"),
-                        "last_sync_message": updated.get("last_sync_message"),
-                    })
+                    render_data_view(updated_consultation_display_data(updated), view_mode)
 
                     st.rerun()
 
@@ -834,7 +916,7 @@ with psychologist_tab:
                 )
             )
             req = next(r for r in pending_requests if r["id"] == selected_req_id)
-            st.json(summarize_request(req))
+            render_data_view(summarize_request(req), view_mode)
 
             if req["suggestions"]:
                 slot_labels = {
@@ -894,15 +976,7 @@ with psychologist_tab:
                     else:
                         st.info(sync_info["message"])
 
-                    st.json({
-                        "evento_atualizado_local": updated["id"],
-                        "novo_inicio": updated["inicio"].strftime("%d/%m/%Y %H:%M"),
-                        "novo_fim": updated["fim"].strftime("%d/%m/%Y %H:%M"),
-                        "meet_link": updated["meet_link"],
-                        "google_event_id": updated.get("google_event_id"),
-                        "google_sync_status": updated.get("google_sync_status"),
-                        "last_sync_message": updated.get("last_sync_message"),
-                    })
+                    render_data_view(updated_consultation_display_data(updated), view_mode)
 
             with action_col2:
                 if st.button("Recusar / manter horário", use_container_width=True):
@@ -1034,16 +1108,7 @@ with config_tab:
     )
     psy = PSYCHOLOGISTS[cfg_psy]
 
-    st.json({
-        "nome": psy["nome"],
-        "calendar_id": psy["calendar_id"],
-        "duracao_min": psy["duracao_min"],
-        "requer_aprovacao_remarcacao": psy["requer_aprovacao_remarcacao"],
-        "dias_permitidos": psy["dias_permitidos"],
-        "janelas": [f"{a.strftime('%H:%M')}-{b.strftime('%H:%M')}" for a, b in psy["janelas"]],
-        "politica_cobranca": psy["politica_cobranca"],
-        "tom": psy["tom"]
-    })
+    render_data_view(psychologist_config_display_data(psy), view_mode)
 
     st.markdown("### Como isso escala")
     st.markdown(
