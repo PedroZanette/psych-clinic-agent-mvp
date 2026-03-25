@@ -28,32 +28,36 @@ Mensagem:
 {message}
 """.strip()
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-    )
-
-    text = response.text.strip()
-
-    # remove cercas caso o modelo devolva ```json
-    text = text.replace("```json", "").replace("```", "").strip()
-
     try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+
+        text = response.text.strip()
+        text = text.replace("```json", "").replace("```", "").strip()
+
         data = json.loads(text)
+
         return {
             "intent": data.get("intent", "unknown"),
             "preference": data.get("preference"),
             "urgency": data.get("urgency", "média"),
             "reply": data.get("reply", "Entendi. Vou verificar opções para você."),
             "raw_model_output": text,
+            "used_gemini": True,
+            "gemini_error": None,
         }
-    except Exception:
+
+    except Exception as e:
         return {
             "intent": "unknown",
             "preference": None,
             "urgency": "média",
-            "reply": "Entendi sua mensagem. Vou verificar as opções disponíveis.",
-            "raw_model_output": text,
+            "reply": "Entendi! Vou verificar opções de remarcação para você.",
+            "raw_model_output": "",
+            "used_gemini": False,
+            "gemini_error": str(e),
         }
 
 
@@ -75,9 +79,15 @@ Contexto:
 Retorne apenas a mensagem final.
 """.strip()
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=prompt,
-    )
+    try:
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+        )
+        return response.text.strip()
 
-    return response.text.strip()
+    except Exception:
+        return (
+            f"Olá, {patient_name}! Sua consulta com {psychologist_name} foi remarcada com sucesso. "
+            f"O horário anterior era {old_time} e o novo horário é {new_time}."
+        )

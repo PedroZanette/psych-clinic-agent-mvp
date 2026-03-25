@@ -48,6 +48,10 @@ def list_upcoming_events(calendar_id: str = "primary", max_results: int = 20):
 
     return result.get("items", [])
 
+def get_event_by_id(calendar_id: str, event_id: str):
+    service = get_calendar_service()
+    return service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+
 
 def find_event_by_text(calendar_id: str, text: str, max_results: int = 50):
     service = get_calendar_service()
