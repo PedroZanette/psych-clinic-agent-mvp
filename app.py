@@ -736,6 +736,7 @@ with patient_tab:
             st.caption(f"Preferência detectada: {parsed['preference']}")
             consultation = find_upcoming_consultation(psicologa_id, paciente_id)
             if consultation:
+                resolve_google_event_for_consultation(consultation)
                 sync_consultation_from_google(consultation)
 
             if parsed["intent"] != "reschedule":
@@ -775,6 +776,8 @@ with patient_tab:
         consultation = find_upcoming_consultation(psicologa_id, paciente_id)
 
         if consultation:
+            resolve_google_event_for_consultation(consultation)
+            sync_consultation_from_google(consultation)
             render_data_view(consultation_display_data(consultation), view_mode)
         else:
             st.write("Nenhuma consulta futura encontrada.")
